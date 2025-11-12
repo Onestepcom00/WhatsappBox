@@ -1,0 +1,15 @@
+{
+  "name": "the-box/box-whatsapp",
+  "description": "The WhatsApp Box is part of the TheBox family — a lightweight PHP package that allows you to send WhatsApp messages easily",
+  "type": "library",
+  "license": "MIT",
+  "require": {
+    "php": ">=7.4",
+    "ext-curl": "*"
+  },
+  "autoload": {
+    "psr-4": {
+      "BoxWhatsapp\\": "src/"
+    }
+  }
+}
