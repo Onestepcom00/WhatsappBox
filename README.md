@@ -29,7 +29,7 @@ Before using this package, make sure you have the following:
 Install the package via Composer:
 
 ```bash
-composer install the-box/whatsapp-box
+composer require the-box/whatsapp-box
 ```
 
 ---
