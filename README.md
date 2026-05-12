@@ -541,9 +541,7 @@ Your support helps maintain compatibility with evolving APIs such as Unipile and
 
 ## Donation
 
-[![Support via Donation](https://img.shields.io/badge/
-Donate-Here-ff69b4?logo=heart&style=for-the-badge)](https://
-jxzmkdpz.mychariow.shop/donation)
+[![Support via Donation](https://img.shields.io/badge/Donate-Here-ff69b4?logo=heart&style=for-the-badge)](https://jxzmkdpz.mychariow.shop/donation)
 
 ---
 
