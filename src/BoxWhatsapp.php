@@ -1,21 +1,43 @@
 <?php
 
+declare(strict_types=1);
+
 namespace BoxWhatsapp;
 
+/**
+ * BoxWhatsapp - Lightweight WhatsApp messenger via Unipile API
+ *
+ * @package BoxWhatsapp
+ * @author Exauce Stan Malka
+ * @license MIT
+ */
 class BoxWhatsapp
 {
     private ?string $apiKey = null;
-    private ?string $baseUrl = null; // ex: https://your-unipile-host/api
+    private ?string $baseUrl = null;
     private ?string $accountId = null;
-    private ?string $defaultDest = null; // ex: +243000000000à
+    private ?string $defaultDest = null;
+
+    private const CONNECTION_TIMEOUT = 10;
+    private const REQUEST_TIMEOUT = 15;
 
     public function __construct(?string $apiKey = null, ?string $baseUrl = null)
     {
-        $this->apiKey = $apiKey ?: getenv('WHATSAPP_API_KEY') ?: null;
-        $this->baseUrl = $baseUrl ? rtrim($baseUrl, '/') : (getenv('WHATSAPP_BASE_URL') ? rtrim(getenv('WHATSAPP_BASE_URL'), '/') : null);
+        $this->apiKey = $apiKey ?: (getenv('WHATSAPP_API_KEY') ?: null);
+        $this->baseUrl = $baseUrl ? $this->normalizeBaseUrl($baseUrl) : $this->getBaseUrlFromEnv();
     }
 
-    // Configuration
+    private function normalizeBaseUrl(string $url): string
+    {
+        return rtrim($url, '/');
+    }
+
+    private function getBaseUrlFromEnv(): ?string
+    {
+        $envUrl = getenv('WHATSAPP_BASE_URL');
+        return $envUrl ? $this->normalizeBaseUrl($envUrl) : null;
+    }
+
     public function setKey(string $key): self
     {
         $this->apiKey = $key;
@@ -24,7 +46,7 @@ class BoxWhatsapp
 
     public function setDns(string $dns): self
     {
-        $this->baseUrl = rtrim($dns, '/');
+        $this->baseUrl = $this->normalizeBaseUrl($dns);
         return $this;
     }
 
@@ -40,26 +62,40 @@ class BoxWhatsapp
         return $this;
     }
 
-    // Envois
+    /**
+     * Send a text message to a single recipient.
+     *
+     * @param string $message Message content
+     * @param string|null $dest Recipient phone number (international format)
+     * @return array Response with success flag, message_id, response data and http_code
+     */
     public function sendMessage(string $message, ?string $dest = null): array
     {
         $this->assertConfigured();
         $accountId = $this->getAccountId();
-        $number = $dest ?: $this->defaultDest;
-        if (!$number) {
-            return $this->errorResult('Aucun destinataire fourni (setDest ou paramètre manquant)');
+        $recipient = $dest ?: $this->defaultDest;
+
+        if (!$recipient) {
+            return $this->errorResult('No recipient provided. Use setDest() or pass $dest parameter.');
         }
 
-        $whatsappId = $this->toWhatsappId($number);
-        $postData = [
+        $whatsappId = $this->toWhatsappId($recipient);
+        $payload = [
             'account_id'    => $accountId,
-            'attendees_ids' => $whatsappId,
+            'attendees_ids' => [$whatsappId],
             'text'          => $message,
         ];
 
-        return $this->postMultipart('/chats', $postData);
+        return $this->postMultipart('/api/v1/chats', $payload);
     }
 
+    /**
+     * Send the same message to multiple recipients.
+     *
+     * @param string $message Message content
+     * @param array $dests Array of phone numbers
+     * @return array Associative array with phone numbers as keys and send results as values
+     */
     public function sendMessageGroup(string $message, array $dests): array
     {
         $results = [];
@@ -69,76 +105,96 @@ class BoxWhatsapp
         return $results;
     }
 
-    // Optionnel: envoi à un groupe via JID (ex: 12345-67890@g.us)
+    /**
+     * Send a message to a WhatsApp group using its JID.
+     *
+     * @param string $groupJid Group identifier (e.g., 12345-67890@g.us)
+     * @param string $message Message content
+     * @return array Response with success flag, message_id, response data and http_code
+     */
     public function sendMessageToGroup(string $groupJid, string $message): array
     {
         $this->assertConfigured();
         $accountId = $this->getAccountId();
-        $postData = [
+        $payload = [
             'account_id'    => $accountId,
-            'attendees_ids' => $groupJid,
+            'attendees_ids' => [$groupJid],
             'text'          => $message,
         ];
-        return $this->postMultipart('/chats', $postData);
+        return $this->postMultipart('/api/v1/chats', $payload);
     }
 
-    // Découverte du compte
+    /**
+     * Retrieve or auto-discover the account ID.
+     *
+     * @throws \RuntimeException If auto-discovery fails and no account ID is set
+     */
     public function getAccountId(): string
     {
-        if ($this->accountId) {
+        if ($this->accountId !== null) {
             return $this->accountId;
         }
 
-        $res = $this->getJson('/accounts');
-        if (!$res['success']) {
-            throw new \RuntimeException('Impossible de récupérer account_id: ' . ($res['error'] ?? 'erreur inconnue'));
+        $response = $this->getJson('/api/v1/me');
+        if (!$response['success']) {
+            throw new \RuntimeException(
+                'Unable to auto-discover account_id. Please set it manually using setAccountId(). Error: ' .
+                ($response['error'] ?? 'unknown error')
+            );
         }
 
-        $data = $res['response'];
-        $accounts = $data['items'] ?? $data['data'] ?? $data ?? [];
-        if (!is_array($accounts) || empty($accounts)) {
-            throw new \RuntimeException('Aucun compte Unipile trouvé');
-        }
-        $account = $accounts[0];
-        $accountId = $account['id'] ?? $account['account_id'] ?? null;
+        $data = $response['response'];
+        $accountId = $data['id'] ?? $data['account_id'] ?? null;
+
         if (!$accountId) {
-            throw new \RuntimeException('account_id introuvable dans la réponse');
+            throw new \RuntimeException('account_id not found in /me response.');
         }
+
         $this->accountId = $accountId;
         return $this->accountId;
     }
 
-    // Helpers HTTP
     private function getJson(string $endpoint): array
     {
         $this->assertConfigured();
         $url = $this->baseUrl . $endpoint;
         $ch = curl_init($url);
+
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_HTTPHEADER, [
             'X-API-KEY: ' . $this->apiKey,
-            'accept: application/json',
+            'Accept: application/json',
         ]);
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+        curl_setopt($ch, CURLOPT_TIMEOUT, self::REQUEST_TIMEOUT);
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, self::CONNECTION_TIMEOUT);
 
         $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $httpCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $curlError = curl_error($ch);
-        curl_close($ch);
 
-        if ($httpCode !== 200) {
+        if ($curlError !== '') {
             return [
-                'success'   => false,
-                'error'     => "Erreur HTTP $httpCode: " . ($curlError ?: 'Erreur de requête'),
-                'http_code' => $httpCode,
-                'details'   => $response,
+                'success' => false,
+                'error' => 'cURL error: ' . $curlError,
+                'http_code' => $httpCode ?: 0,
+                'details' => null,
             ];
         }
 
+        if ($httpCode !== 200) {
+            return [
+                'success' => false,
+                'error' => "HTTP {$httpCode} error",
+                'http_code' => $httpCode,
+                'details' => $response,
+            ];
+        }
+
+        $decoded = json_decode($response, true);
         return [
-            'success'  => true,
-            'response' => json_decode($response, true),
+            'success' => true,
+            'response' => $decoded,
         ];
     }
 
@@ -147,55 +203,69 @@ class BoxWhatsapp
         $this->assertConfigured();
         $url = $this->baseUrl . $endpoint;
         $ch = curl_init($url);
+
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_POST, true);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, $postData); // multipart/form-data
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $postData);
         curl_setopt($ch, CURLOPT_HTTPHEADER, [
             'X-API-KEY: ' . $this->apiKey,
-            'accept: application/json',
+            'Accept: application/json',
         ]);
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 15);
-        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
+        curl_setopt($ch, CURLOPT_TIMEOUT, self::REQUEST_TIMEOUT);
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, self::CONNECTION_TIMEOUT);
 
         $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $httpCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $curlError = curl_error($ch);
-        curl_close($ch);
+
+        if ($curlError !== '') {
+            return [
+                'success' => false,
+                'error' => 'cURL error: ' . $curlError,
+                'http_code' => 0,
+                'details' => null,
+            ];
+        }
 
         if ($httpCode >= 200 && $httpCode < 300) {
             $data = json_decode($response, true);
             return [
-                'success'     => true,
-                'message_id'  => $data['id'] ?? $data['message_id'] ?? ($data['data']['id'] ?? null),
-                'response'    => $data,
-                'http_code'   => $httpCode,
+                'success' => true,
+                'message_id' => $data['id'] ?? $data['message_id'] ?? ($data['data']['id'] ?? null),
+                'response' => $data,
+                'http_code' => $httpCode,
             ];
         }
 
         $errorData = json_decode($response, true);
-        $errorMsg = $errorData['error'] ?? $errorData['message'] ?? $curlError ?? "Erreur HTTP $httpCode";
+        $errorMsg = $errorData['error'] ?? $errorData['message'] ?? $curlError ?? "HTTP {$httpCode} error";
+
         return [
-            'success'   => false,
-            'error'     => $errorMsg,
+            'success' => false,
+            'error' => $errorMsg,
             'http_code' => $httpCode,
-            'details'   => $response,
+            'details' => $response,
         ];
     }
 
     private function toWhatsappId(string $number): string
     {
-        $num = ltrim($number, '+');
-        return $num . '@s.whatsapp.net';
+        $cleanNumber = ltrim($number, '+');
+        return $cleanNumber . '@s.whatsapp.net';
     }
 
     private function assertConfigured(): void
     {
-        if (!$this->apiKey) {
-            throw new \InvalidArgumentException('API key manquante. Utilisez setKey("...") ou définissez WHATSAPP_API_KEY.');
+        if ($this->apiKey === null || $this->apiKey === '') {
+            throw new \InvalidArgumentException(
+                'Missing API key. Use setKey() or define WHATSAPP_API_KEY environment variable.'
+            );
         }
-        if (!$this->baseUrl) {
-            throw new \InvalidArgumentException('Base URL/DNS manquant. Utilisez setDns("...") ou définissez WHATSAPP_BASE_URL.');
+        if ($this->baseUrl === null || $this->baseUrl === '') {
+            throw new \InvalidArgumentException(
+                'Missing Base URL. Use setDns() or define WHATSAPP_BASE_URL environment variable.'
+            );
         }
     }
 
@@ -203,7 +273,7 @@ class BoxWhatsapp
     {
         return [
             'success' => false,
-            'error'   => $message,
+            'error' => $message,
         ];
     }
 }
